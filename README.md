@@ -23,4 +23,4 @@ Common tasks:
 ./gradlew updateDawn -PdawnNatives.chromiumVersion=7458
 ```
 
-CI uploads one artifact per package plus `dawn-natives-manifest`.
+Run the workflow manually. Leave `publishRelease` unchecked to validate only.

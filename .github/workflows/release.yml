@@ -2,9 +2,12 @@ name: dawn-natives
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - master
+    inputs:
+      publishRelease:
+        description: Publish a GitHub release after the build succeeds
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -296,6 +299,7 @@ jobs:
             echo
             echo "- Dawn Chromium version: ${dawn_chromium_version}"
             echo "- Dawn ref: ${dawn_ref}"
+            echo "- Publish release: ${{ inputs.publishRelease }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
@@ -303,7 +307,7 @@ jobs:
           path: build/packages/dawn-natives-manifest.json
           if-no-files-found: error
       - name: Prepare GitHub release assets
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.publishRelease
         shell: bash
         run: |
           rm -rf build/release-assets
@@ -317,7 +321,7 @@ jobs:
           done < <(find build/packages -mindepth 1 -maxdepth 1 -type d -name 'dawn-natives-*' -print0 | sort -z)
           cp build/packages/dawn-natives-manifest.json build/release-assets/
       - name: Compute release metadata
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.publishRelease
         id: release_metadata
         shell: bash
         env:
@@ -342,7 +346,7 @@ jobs:
             echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } > "$RUNNER_TEMP/release-notes.md"
       - name: Update version tag
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.publishRelease
         shell: bash
         env:
           TAG_NAME: ${{ steps.release_metadata.outputs.tag_name }}
@@ -350,7 +354,7 @@ jobs:
           git tag -f "$TAG_NAME" "$GITHUB_SHA"
           git push --force origin "refs/tags/$TAG_NAME"
       - name: Publish GitHub release
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.publishRelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_metadata.outputs.tag_name }}
