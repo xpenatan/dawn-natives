@@ -22,5 +22,3 @@ Common tasks:
 ./gradlew writeReleaseManifest
 ./gradlew updateDawn -PdawnNatives.chromiumVersion=7458
 ```
-
-Run the workflow manually. Leave `publishRelease` unchecked to validate only.
