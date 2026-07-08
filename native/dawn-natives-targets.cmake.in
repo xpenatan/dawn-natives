@@ -1,0 +1,62 @@
+include_guard(GLOBAL)
+
+set(_dawn_natives_prefix "${CMAKE_CURRENT_LIST_DIR}/..")
+set(_dawn_natives_lib_dir "${_dawn_natives_prefix}/lib")
+set(_dawn_natives_include_dir "${_dawn_natives_prefix}/include")
+
+if(WIN32)
+    set(_dawn_natives_webgpu_dawn_lib "${_dawn_natives_lib_dir}/webgpu_dawn.lib")
+else()
+    set(_dawn_natives_webgpu_dawn_lib "${_dawn_natives_lib_dir}/libwebgpu_dawn.a")
+endif()
+
+if(NOT EXISTS "${_dawn_natives_webgpu_dawn_lib}")
+    message(FATAL_ERROR "dawn-natives webgpu_dawn library is missing: ${_dawn_natives_webgpu_dawn_lib}")
+endif()
+
+find_package(Threads REQUIRED)
+
+set(_dawn_natives_platform_libraries Threads::Threads ${CMAKE_DL_LIBS})
+
+if(WIN32)
+    list(APPEND _dawn_natives_platform_libraries
+        user32.lib
+        onecore_apiset.lib
+        dxguid.lib
+        ws2_32.lib
+        userenv.lib
+        ntdll.lib
+        opengl32.lib
+        d3dcompiler.lib
+        ole32.lib
+        propsys.lib
+        runtimeobject.lib
+        gdi32.lib
+        oleaut32.lib)
+elseif(APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        list(APPEND _dawn_natives_platform_libraries
+            "-framework Cocoa"
+            "-framework IOKit")
+    endif()
+    list(APPEND _dawn_natives_platform_libraries
+        "-framework Foundation"
+        "-framework IOSurface"
+        "-framework QuartzCore"
+        "-framework Metal")
+elseif(ANDROID)
+    list(APPEND _dawn_natives_platform_libraries android log)
+endif()
+
+add_library(dawn_natives::webgpu_dawn STATIC IMPORTED)
+set_target_properties(dawn_natives::webgpu_dawn PROPERTIES
+    IMPORTED_LOCATION "${_dawn_natives_webgpu_dawn_lib}"
+    INTERFACE_INCLUDE_DIRECTORIES "${_dawn_natives_include_dir}"
+    INTERFACE_COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/Zc:preprocessor>"
+    INTERFACE_LINK_LIBRARIES "${_dawn_natives_platform_libraries}")
+
+unset(_dawn_natives_prefix)
+unset(_dawn_natives_lib_dir)
+unset(_dawn_natives_include_dir)
+unset(_dawn_natives_webgpu_dawn_lib)
+unset(_dawn_natives_platform_libraries)
