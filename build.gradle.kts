@@ -478,28 +478,28 @@ val windowsTarget = NativeTarget(
 )
 val macosX64Target = NativeTarget(
     taskSuffix = "MacosX64",
-    classifier = "macos-x64-appleclang",
-    stageDirectory = File(stageRoot, "macos-x64-appleclang"),
-    buildDirectory = File(cmakeRoot, "macos-x64-appleclang"),
-    packageDirectoryName = "$packagePrefix-macos-x64-appleclang",
+    classifier = "macos-x64",
+    stageDirectory = File(stageRoot, "macos-x64"),
+    buildDirectory = File(cmakeRoot, "macos-x64"),
+    packageDirectoryName = "$packagePrefix-macos-x64",
     enabledOnHost = hostOs() == "macos",
     configureArguments = listOf("-DCMAKE_OSX_ARCHITECTURES=x86_64")
 )
 val macosArm64Target = NativeTarget(
     taskSuffix = "MacosArm64",
-    classifier = "macos-arm64-appleclang",
-    stageDirectory = File(stageRoot, "macos-arm64-appleclang"),
-    buildDirectory = File(cmakeRoot, "macos-arm64-appleclang"),
-    packageDirectoryName = "$packagePrefix-macos-arm64-appleclang",
+    classifier = "macos-arm64",
+    stageDirectory = File(stageRoot, "macos-arm64"),
+    buildDirectory = File(cmakeRoot, "macos-arm64"),
+    packageDirectoryName = "$packagePrefix-macos-arm64",
     enabledOnHost = hostOs() == "macos",
     configureArguments = listOf("-DCMAKE_OSX_ARCHITECTURES=arm64")
 )
 val iosArm64Target = NativeTarget(
     taskSuffix = "IosArm64",
-    classifier = "ios-arm64-appleclang",
-    stageDirectory = File(stageRoot, "ios-arm64-appleclang"),
-    buildDirectory = File(cmakeRoot, "ios-arm64-appleclang"),
-    packageDirectoryName = "$packagePrefix-ios-arm64-appleclang",
+    classifier = "ios-arm64",
+    stageDirectory = File(stageRoot, "ios-arm64"),
+    buildDirectory = File(cmakeRoot, "ios-arm64"),
+    packageDirectoryName = "$packagePrefix-ios-arm64",
     enabledOnHost = iosEnabled,
     configureArguments = listOf(
         "-DCMAKE_SYSTEM_NAME=iOS",
@@ -512,10 +512,10 @@ val iosArm64Target = NativeTarget(
 )
 val iosSimulatorArm64Target = NativeTarget(
     taskSuffix = "IosSimulatorArm64",
-    classifier = "ios-simulator-arm64-appleclang",
-    stageDirectory = File(stageRoot, "ios-simulator-arm64-appleclang"),
-    buildDirectory = File(cmakeRoot, "ios-simulator-arm64-appleclang"),
-    packageDirectoryName = "$packagePrefix-ios-simulator-arm64-appleclang",
+    classifier = "ios-simulator-arm64",
+    stageDirectory = File(stageRoot, "ios-simulator-arm64"),
+    buildDirectory = File(cmakeRoot, "ios-simulator-arm64"),
+    packageDirectoryName = "$packagePrefix-ios-simulator-arm64",
     enabledOnHost = iosEnabled,
     configureArguments = listOf(
         "-DCMAKE_SYSTEM_NAME=iOS",
@@ -528,10 +528,10 @@ val iosSimulatorArm64Target = NativeTarget(
 )
 val iosSimulatorX64Target = NativeTarget(
     taskSuffix = "IosSimulatorX64",
-    classifier = "ios-simulator-x64-appleclang",
-    stageDirectory = File(stageRoot, "ios-simulator-x64-appleclang"),
-    buildDirectory = File(cmakeRoot, "ios-simulator-x64-appleclang"),
-    packageDirectoryName = "$packagePrefix-ios-simulator-x64-appleclang",
+    classifier = "ios-simulator-x64",
+    stageDirectory = File(stageRoot, "ios-simulator-x64"),
+    buildDirectory = File(cmakeRoot, "ios-simulator-x64"),
+    packageDirectoryName = "$packagePrefix-ios-simulator-x64",
     enabledOnHost = iosEnabled,
     configureArguments = listOf(
         "-DCMAKE_SYSTEM_NAME=iOS",

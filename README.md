@@ -48,9 +48,9 @@ macOS host with Xcode's iOS SDKs installed.
 The GitHub Actions workflow builds packages on `master` pushes and manual
 dispatches. Each platform or ABI job stages a package directory and uploads it
 as the GitHub artifact payload. Android builds are split per ABI so the four
-architectures run in parallel instead of serially in one job. The final
-`dawn-natives-release` artifact contains all package directories plus
-`dawn-natives-manifest.json`.
+architectures run in parallel instead of serially in one job. The final release
+job uploads only `dawn-natives-manifest`; it does not create an aggregate
+artifact containing every package.
 
 Successful `master` builds validate the package build and upload workflow
 artifacts. To publish a GitHub Release, run the workflow manually with

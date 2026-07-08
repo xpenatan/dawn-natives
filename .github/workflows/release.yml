@@ -85,8 +85,8 @@ jobs:
         run: ./gradlew --no-daemon packageMacosX64
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-macos-x64-appleclang
-          path: build/packages/dawn-natives-macos-x64-appleclang
+          name: dawn-natives-macos-x64
+          path: build/packages/dawn-natives-macos-x64
           if-no-files-found: error
 
   macos_arm64:
@@ -103,8 +103,8 @@ jobs:
         run: ./gradlew --no-daemon packageMacosArm64
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-macos-arm64-appleclang
-          path: build/packages/dawn-natives-macos-arm64-appleclang
+          name: dawn-natives-macos-arm64
+          path: build/packages/dawn-natives-macos-arm64
           if-no-files-found: error
 
   android:
@@ -189,13 +189,13 @@ jobs:
         include:
           - name: arm64
             task: packageIosArm64
-            artifact: dawn-natives-ios-arm64-appleclang
+            artifact: dawn-natives-ios-arm64
           - name: simulator arm64
             task: packageIosSimulatorArm64
-            artifact: dawn-natives-ios-simulator-arm64-appleclang
+            artifact: dawn-natives-ios-simulator-arm64
           - name: simulator x64
             task: packageIosSimulatorX64
-            artifact: dawn-natives-ios-simulator-x64-appleclang
+            artifact: dawn-natives-ios-simulator-x64
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -232,6 +232,11 @@ jobs:
           path: build/packages
       - name: Write release manifest
         run: ./gradlew --no-daemon writeReleaseManifest
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dawn-natives-manifest
+          path: build/packages/dawn-natives-manifest.json
+          if-no-files-found: error
       - name: Read package version
         if: github.event_name == 'workflow_dispatch'
         id: package_version
@@ -243,11 +248,6 @@ jobs:
             exit 1
           fi
           echo "version=$package_version" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dawn-natives-release
-          path: build/packages
-          if-no-files-found: error
       - name: Prepare GitHub release assets
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -255,6 +255,9 @@ jobs:
           rm -rf build/release-assets
           mkdir -p build/release-assets
           while IFS= read -r -d '' package_dir; do
+            if [[ ! -f "$package_dir/cmake/dawn-natives-targets.cmake" ]]; then
+              continue
+            fi
             package_name="$(basename "$package_dir")"
             (cd "$package_dir" && zip -qr "$GITHUB_WORKSPACE/build/release-assets/${package_name}.zip" .)
           done < <(find build/packages -mindepth 1 -maxdepth 1 -type d -name 'dawn-natives-*' -print0 | sort -z)
@@ -272,7 +275,7 @@ jobs:
           {
             echo "tag_name=$tag_name"
             echo "release_name=$release_name"
-            echo "body_path=$RUNNER_TEMP/dawn-natives-release-notes.md"
+            echo "body_path=$RUNNER_TEMP/release-notes.md"
           } >> "$GITHUB_OUTPUT"
           {
             echo "dawn-natives build ${GITHUB_RUN_NUMBER}"
@@ -280,7 +283,7 @@ jobs:
             echo "UTC build date: ${readable_date}"
             echo "Commit: ${GITHUB_SHA}"
             echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          } > "$RUNNER_TEMP/dawn-natives-release-notes.md"
+          } > "$RUNNER_TEMP/release-notes.md"
       - name: Update version tag
         if: github.event_name == 'workflow_dispatch'
         shell: bash
