@@ -274,30 +274,26 @@ jobs:
         id: build_metadata
         shell: bash
         run: |
-          package_version=
           dawn_chromium_version=
           dawn_ref=
           ./gradlew --no-daemon -q printNativeDepsConfig > "$RUNNER_TEMP/dawn-natives.properties"
           while IFS='=' read -r key value; do
             case "$key" in
-              package.version) package_version="$value" ;;
               dawn.chromiumVersion) dawn_chromium_version="$value" ;;
               dawn.ref) dawn_ref="$value" ;;
             esac
           done < "$RUNNER_TEMP/dawn-natives.properties"
-          if [[ -z "$package_version" || -z "$dawn_chromium_version" || -z "$dawn_ref" ]]; then
+          if [[ -z "$dawn_chromium_version" || -z "$dawn_ref" ]]; then
             echo "Missing build metadata from printNativeDepsConfig." >&2
             exit 1
           fi
           {
-            echo "package_version=$package_version"
             echo "dawn_chromium_version=$dawn_chromium_version"
             echo "dawn_ref=$dawn_ref"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### dawn-natives build"
             echo
-            echo "- Package version: ${package_version}"
             echo "- Dawn Chromium version: ${dawn_chromium_version}"
             echo "- Dawn ref: ${dawn_ref}"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -325,13 +321,12 @@ jobs:
         id: release_metadata
         shell: bash
         env:
-          PACKAGE_VERSION: ${{ steps.build_metadata.outputs.package_version }}
           DAWN_CHROMIUM_VERSION: ${{ steps.build_metadata.outputs.dawn_chromium_version }}
           DAWN_REF: ${{ steps.build_metadata.outputs.dawn_ref }}
         run: |
           readable_date="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-          tag_name="v${PACKAGE_VERSION}"
-          release_name="${tag_name} (Dawn ${DAWN_CHROMIUM_VERSION})"
+          tag_name="dawn-${DAWN_CHROMIUM_VERSION}"
+          release_name="Dawn ${DAWN_CHROMIUM_VERSION}"
           {
             echo "tag_name=$tag_name"
             echo "release_name=$release_name"

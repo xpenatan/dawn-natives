@@ -38,12 +38,7 @@ data class WebConfig(
     val emscriptenVersion: String
 )
 
-data class PackageConfig(
-    val version: String
-)
-
 data class DawnNativesConfig(
-    val packageConfig: PackageConfig,
     val dawn: DawnConfig,
     val android: AndroidConfig,
     val ios: IosConfig,
@@ -114,7 +109,6 @@ fun Map<String, Map<String, String>>.required(section: String, key: String): Str
 fun readNativeConfig(): DawnNativesConfig {
     val toml = readToml()
     return DawnNativesConfig(
-        packageConfig = PackageConfig(toml.required("package", "version")),
         dawn = DawnConfig(
             repository = toml.required("dawn", "repository"),
             chromiumVersion = toml.required("dawn", "chromiumVersion")
@@ -218,7 +212,6 @@ fun writeLockManifest(config: DawnNativesConfig) {
     lockFile.writeText(
         """
         {
-          "packageVersion": ${quoteJson(config.packageConfig.version)},
           "dawn": {
             "repository": ${quoteJson(config.dawn.repository)},
             "chromiumVersion": ${quoteJson(config.dawn.normalizedChromiumVersion)},
@@ -395,7 +388,6 @@ val printNativeDepsConfig = tasks.register("printNativeDepsConfig") {
     group = "help"
     description = "Prints the dawn-natives dependency and toolchain pins."
     doLast {
-        println("package.version=${nativeConfig.packageConfig.version}")
         println("dawn.repository=${nativeConfig.dawn.repository}")
         println("dawn.chromiumVersion=${nativeConfig.dawn.normalizedChromiumVersion}")
         println("dawn.ref=${nativeConfig.dawn.ref}")
@@ -815,7 +807,6 @@ val writeReleaseManifest = tasks.register("writeReleaseManifest") {
         }
         val manifestLines = mutableListOf(
             "{",
-            "  \"packageVersion\": ${quoteJson(nativeConfig.packageConfig.version)},",
             "  \"dawn\": {",
             "    \"repository\": ${quoteJson(nativeConfig.dawn.repository)},",
             "    \"chromiumVersion\": ${quoteJson(nativeConfig.dawn.normalizedChromiumVersion)},",

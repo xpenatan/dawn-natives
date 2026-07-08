@@ -1,6 +1,3 @@
-[package]
-version = "0.1.0"
-
 [dawn]
 repository = "https://dawn.googlesource.com/dawn"
 chromiumVersion = "7458"
