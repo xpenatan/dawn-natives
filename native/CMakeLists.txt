@@ -8,6 +8,9 @@ if(NOT DEFINED DAWN_NATIVES_STAGE_DIR)
     message(FATAL_ERROR "DAWN_NATIVES_STAGE_DIR is required")
 endif()
 
+set(DAWN_NATIVES_PACKAGE_KIND "native" CACHE STRING "Package kind: native or emdawnwebgpu")
+set_property(CACHE DAWN_NATIVES_PACKAGE_KIND PROPERTY STRINGS native emdawnwebgpu)
+
 file(TO_CMAKE_PATH "${DAWN_NATIVES_DAWN_SOURCE_DIR}" DAWN_NATIVES_DAWN_SOURCE_DIR)
 file(TO_CMAKE_PATH "${DAWN_NATIVES_STAGE_DIR}" DAWN_NATIVES_STAGE_DIR)
 
@@ -67,7 +70,10 @@ set(TINT_BUILD_TINTD OFF CACHE BOOL "" FORCE)
 set(TINT_ENABLE_IR_DUMPING OFF CACHE BOOL "" FORCE)
 set(TINT_ENABLE_IR_VALIDATION_ASSERTS OFF CACHE BOOL "" FORCE)
 
-if(WIN32)
+if(EMSCRIPTEN)
+    set(CMAKE_C_FLAGS_RELEASE "-O0 -DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS_RELEASE "-O0 -DNDEBUG" CACHE STRING "" FORCE)
+elseif(WIN32)
     set(DAWN_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
     set(TINT_BUILD_HLSL_WRITER ON CACHE BOOL "" FORCE)
 elseif(APPLE)
@@ -119,24 +125,38 @@ set(DAWN_BUILD_GEN_DIR "${DAWN_NATIVES_DAWN_GEN_DIR}" CACHE PATH "" FORCE)
 
 add_subdirectory("${DAWN_NATIVES_DAWN_SOURCE_DIR}" dawn EXCLUDE_FROM_ALL)
 
-if(NOT TARGET webgpu_dawn)
-    message(FATAL_ERROR "Dawn target webgpu_dawn was not created")
+if(DAWN_NATIVES_PACKAGE_KIND STREQUAL "emdawnwebgpu")
+    if(NOT EMSCRIPTEN)
+        message(FATAL_ERROR "DAWN_NATIVES_PACKAGE_KIND=emdawnwebgpu requires the Emscripten toolchain")
+    endif()
+    if(NOT TARGET emdawnwebgpu_pkg)
+        message(FATAL_ERROR "Dawn target emdawnwebgpu_pkg was not created")
+    endif()
+    add_custom_target(stage_dawn_natives
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${DAWN_NATIVES_STAGE_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_BINARY_DIR}/emdawnwebgpu_pkg" "${DAWN_NATIVES_STAGE_DIR}"
+        DEPENDS emdawnwebgpu_pkg
+        COMMENT "Staging dawn-natives Emdawnwebgpu package")
+else()
+    if(NOT TARGET webgpu_dawn)
+        message(FATAL_ERROR "Dawn target webgpu_dawn was not created")
+    endif()
+
+    set(DAWN_NATIVES_TARGETS_FILE "${DAWN_NATIVES_STAGE_DIR}/cmake/dawn-natives-targets.cmake")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/dawn-natives-targets.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/dawn-natives-targets.cmake"
+        @ONLY)
+
+    add_custom_target(stage_dawn_natives
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${DAWN_NATIVES_STAGE_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${DAWN_NATIVES_STAGE_DIR}/lib"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${DAWN_NATIVES_STAGE_DIR}/include"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${DAWN_NATIVES_STAGE_DIR}/cmake"
+        COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:webgpu_dawn>" "${DAWN_NATIVES_STAGE_DIR}/lib/$<TARGET_FILE_NAME:webgpu_dawn>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${DAWN_NATIVES_DAWN_GEN_DIR}/include" "${DAWN_NATIVES_STAGE_DIR}/include"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${DAWN_NATIVES_DAWN_SOURCE_DIR}/include" "${DAWN_NATIVES_STAGE_DIR}/include"
+        COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_BINARY_DIR}/dawn-natives-targets.cmake" "${DAWN_NATIVES_TARGETS_FILE}"
+        DEPENDS webgpu_dawn
+        COMMENT "Staging dawn-natives static library and import target")
 endif()
-
-set(DAWN_NATIVES_TARGETS_FILE "${DAWN_NATIVES_STAGE_DIR}/cmake/dawn-natives-targets.cmake")
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/dawn-natives-targets.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/dawn-natives-targets.cmake"
-    @ONLY)
-
-add_custom_target(stage_dawn_natives
-    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${DAWN_NATIVES_STAGE_DIR}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${DAWN_NATIVES_STAGE_DIR}/lib"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${DAWN_NATIVES_STAGE_DIR}/include"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${DAWN_NATIVES_STAGE_DIR}/cmake"
-    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:webgpu_dawn>" "${DAWN_NATIVES_STAGE_DIR}/lib/$<TARGET_FILE_NAME:webgpu_dawn>"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${DAWN_NATIVES_DAWN_GEN_DIR}/include" "${DAWN_NATIVES_STAGE_DIR}/include"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${DAWN_NATIVES_DAWN_SOURCE_DIR}/include" "${DAWN_NATIVES_STAGE_DIR}/include"
-    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_BINARY_DIR}/dawn-natives-targets.cmake" "${DAWN_NATIVES_TARGETS_FILE}"
-    DEPENDS webgpu_dawn
-    COMMENT "Staging dawn-natives static library and import target")

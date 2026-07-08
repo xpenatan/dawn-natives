@@ -10,8 +10,19 @@ plugins {
 
 data class DawnConfig(
     val repository: String,
-    val revision: String
-)
+    val chromiumVersion: String
+) {
+    val normalizedChromiumVersion: String
+        get() = chromiumVersion
+            .removePrefix("refs/heads/chromium/")
+            .removePrefix("chromium/")
+
+    val ref: String
+        get() = "chromium/$normalizedChromiumVersion"
+
+    val gitRef: String
+        get() = "refs/heads/$ref"
+}
 
 data class AndroidConfig(
     val ndkVersion: String,
@@ -23,6 +34,10 @@ data class IosConfig(
     val deploymentTarget: String
 )
 
+data class WebConfig(
+    val emscriptenVersion: String
+)
+
 data class PackageConfig(
     val version: String
 )
@@ -31,7 +46,8 @@ data class DawnNativesConfig(
     val packageConfig: PackageConfig,
     val dawn: DawnConfig,
     val android: AndroidConfig,
-    val ios: IosConfig
+    val ios: IosConfig,
+    val web: WebConfig
 )
 
 data class NativeTarget(
@@ -101,7 +117,7 @@ fun readNativeConfig(): DawnNativesConfig {
         packageConfig = PackageConfig(toml.required("package", "version")),
         dawn = DawnConfig(
             repository = toml.required("dawn", "repository"),
-            revision = toml.required("dawn", "revision")
+            chromiumVersion = toml.required("dawn", "chromiumVersion")
         ),
         android = AndroidConfig(
             ndkVersion = toml.required("android", "ndkVersion"),
@@ -110,6 +126,9 @@ fun readNativeConfig(): DawnNativesConfig {
         ),
         ios = IosConfig(
             deploymentTarget = toml.required("ios", "deploymentTarget")
+        ),
+        web = WebConfig(
+            emscriptenVersion = toml.required("web", "emscriptenVersion")
         )
     )
 }
@@ -153,8 +172,13 @@ fun directorySize(directory: File): Long {
 
 fun packageDirectories(root: File): List<File> {
     return root.listFiles { file ->
-        file.isDirectory && file.resolve("cmake/dawn-natives-targets.cmake").isFile
+        file.isDirectory && isPackageDirectory(file)
     }?.sortedBy(File::getName) ?: emptyList()
+}
+
+fun isPackageDirectory(directory: File): Boolean {
+    return directory.resolve("cmake/dawn-natives-targets.cmake").isFile ||
+        directory.resolve("emdawnwebgpu.port.py").isFile
 }
 
 fun replaceTomlValues(replacements: Map<Pair<String, String>, String>) {
@@ -197,7 +221,8 @@ fun writeLockManifest(config: DawnNativesConfig) {
           "packageVersion": ${quoteJson(config.packageConfig.version)},
           "dawn": {
             "repository": ${quoteJson(config.dawn.repository)},
-            "revision": ${quoteJson(config.dawn.revision)}
+            "chromiumVersion": ${quoteJson(config.dawn.normalizedChromiumVersion)},
+            "ref": ${quoteJson(config.dawn.ref)}
           },
           "android": {
             "ndkVersion": ${quoteJson(config.android.ndkVersion)},
@@ -206,6 +231,9 @@ fun writeLockManifest(config: DawnNativesConfig) {
           },
           "ios": {
             "deploymentTarget": ${quoteJson(config.ios.deploymentTarget)}
+          },
+          "web": {
+            "emscriptenVersion": ${quoteJson(config.web.emscriptenVersion)}
           }
         }
         """.trimIndent() + System.lineSeparator()
@@ -248,6 +276,60 @@ fun executableCommand(name: String): List<String> {
     return listOf(name)
 }
 
+fun commandExists(name: String): Boolean {
+    val windows = hostOs() == "windows"
+    val path = System.getenv("PATH") ?: return false
+    val candidates = if (windows) {
+        listOf("$name.exe", "$name.bat", "$name.cmd", "$name.ps1", name)
+    } else {
+        listOf(name)
+    }
+    return path.split(File.pathSeparatorChar).any { entry ->
+        val directory = entry.trim().trim('"')
+        directory.isNotEmpty() && candidates.any { File(directory, it).isFile }
+    }
+}
+
+fun emscriptenCommand(name: String): List<String> {
+    if (commandExists(name)) {
+        return executableCommand(name)
+    }
+    val emscripten = System.getenv("EMSCRIPTEN")?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }
+    if (emscripten != null) {
+        val directory = File(emscripten)
+        val candidates = if (hostOs() == "windows") {
+            listOf("$name.bat", "$name.cmd", "$name.ps1", "$name.py", name)
+        } else {
+            listOf(name, "$name.py")
+        }
+        for (candidate in candidates) {
+            val file = directory.resolve(candidate)
+            if (file.isFile) {
+                return if (file.extension.equals("ps1", ignoreCase = true)) {
+                    listOf("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file.absolutePath)
+                } else {
+                    listOf(file.absolutePath)
+                }
+            }
+        }
+    }
+    return listOf(name)
+}
+
+fun emscriptenCommandExists(name: String): Boolean {
+    if (commandExists(name)) {
+        return true
+    }
+    val emscripten = System.getenv("EMSCRIPTEN")?.trim()?.trim('"')?.takeIf { it.isNotEmpty() } ?: return false
+    val directory = File(emscripten)
+    val candidates = if (hostOs() == "windows") {
+        listOf("$name.bat", "$name.cmd", "$name.ps1", "$name.py", name)
+    } else {
+        listOf(name, "$name.py")
+    }
+    return candidates.any { directory.resolve(it).isFile }
+}
+
 fun androidNdkDirectory(): File? {
     val explicit = System.getenv("ANDROID_NDK_HOME")?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }
     if (explicit != null) {
@@ -270,6 +352,16 @@ val dawnSourceDir = sourceRootDir.map { it.dir("dawn") }
 
 fun dawnGeneratorPythonPath(): String {
     val entries = mutableListOf(dawnSourceDir.get().asFile.resolve("generator").absolutePath)
+    System.getenv("PYTHONPATH")?.takeIf { it.isNotBlank() }?.let(entries::add)
+    return entries.joinToString(File.pathSeparator)
+}
+
+fun webPythonPath(): String {
+    val entries = mutableListOf(dawnSourceDir.get().asFile.resolve("generator").absolutePath)
+    System.getenv("EMSCRIPTEN")?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }?.let { emscripten ->
+        entries += emscripten
+        entries += File(emscripten, "tools").absolutePath
+    }
     System.getenv("PYTHONPATH")?.takeIf { it.isNotBlank() }?.let(entries::add)
     return entries.joinToString(File.pathSeparator)
 }
@@ -305,11 +397,13 @@ val printNativeDepsConfig = tasks.register("printNativeDepsConfig") {
     doLast {
         println("package.version=${nativeConfig.packageConfig.version}")
         println("dawn.repository=${nativeConfig.dawn.repository}")
-        println("dawn.revision=${nativeConfig.dawn.revision}")
+        println("dawn.chromiumVersion=${nativeConfig.dawn.normalizedChromiumVersion}")
+        println("dawn.ref=${nativeConfig.dawn.ref}")
         println("android.ndkVersion=${nativeConfig.android.ndkVersion}")
         println("android.minSdk=${nativeConfig.android.minSdk}")
         println("android.cmakeVersion=${nativeConfig.android.cmakeVersion}")
         println("ios.deploymentTarget=${nativeConfig.ios.deploymentTarget}")
+        println("web.emscriptenVersion=${nativeConfig.web.emscriptenVersion}")
     }
 }
 
@@ -327,7 +421,7 @@ val resolveDawnSource = tasks.register("resolveDawnSource") {
     group = "dawn natives"
     description = "Clones or updates the pinned Dawn source under build/sources."
     inputs.property("dawnRepository", nativeConfig.dawn.repository)
-    inputs.property("dawnRevision", nativeConfig.dawn.revision)
+    inputs.property("dawnRef", nativeConfig.dawn.ref)
     outputs.dir(dawnSourceDir)
     doLast {
         val source = dawnSourceDir.get().asFile
@@ -354,7 +448,7 @@ val resolveDawnSource = tasks.register("resolveDawnSource") {
         }.result.get()
         providers.exec {
             workingDir = source
-            commandLine("git", "fetch", "--depth", "1", "origin", nativeConfig.dawn.revision)
+            commandLine("git", "fetch", "--depth", "1", "origin", nativeConfig.dawn.gitRef)
         }.result.get()
         providers.exec {
             workingDir = source
@@ -448,6 +542,88 @@ fun registerNativeTarget(target: NativeTarget): NativeTaskSet {
         dependsOn(smokeTask)
         from(target.stageDirectory)
         into(packageOutputDir)
+    }
+    return NativeTaskSet(buildTask, smokeTask, packageTask)
+}
+
+fun registerWebTarget(): NativeTaskSet {
+    val classifier = "web-emdawnwebgpu"
+    val stageDirectory = File(stageRoot, classifier)
+    val buildDirectory = File(cmakeRoot, classifier)
+    val packageDirectoryName = "$packagePrefix-web-emdawnwebgpu"
+    val enabledOnHost = emscriptenCommandExists("emcmake") && emscriptenCommandExists("em++")
+    val configureTask = tasks.register<Exec>("configureWeb") {
+        group = "dawn natives"
+        description = "Configures the Emdawnwebgpu web package."
+        onlyIf { enabledOnHost }
+        dependsOn(resolveDawnSource)
+        inputs.file(nativeProjectDir.file("CMakeLists.txt"))
+        inputs.dir(dawnSourceDir)
+        outputs.dir(buildDirectory)
+        doFirst {
+            buildDirectory.mkdirs()
+            stageDirectory.mkdirs()
+        }
+        environment("PYTHONPATH", webPythonPath())
+        commandLine(
+            emscriptenCommand("emcmake") + executableCommand("cmake") + listOf(
+                "-S", nativeProjectDir.asFile.absolutePath,
+                "-B", buildDirectory.absolutePath,
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DDAWN_NATIVES_PACKAGE_KIND=emdawnwebgpu",
+                "-DDAWN_NATIVES_DAWN_SOURCE_DIR=${dawnSourceDir.get().asFile.absolutePath}",
+                "-DDAWN_NATIVES_STAGE_DIR=${stageDirectory.absolutePath}"
+            )
+        )
+    }
+    val buildTask = tasks.register<Exec>("buildWeb") {
+        group = "dawn natives"
+        description = "Builds and stages the Emdawnwebgpu web package."
+        onlyIf { enabledOnHost }
+        dependsOn(configureTask)
+        outputs.dir(stageDirectory)
+        environment("PYTHONPATH", webPythonPath())
+        commandLine(
+            executableCommand("cmake") + listOf(
+                "--build", buildDirectory.absolutePath,
+                "--target", "stage_dawn_natives",
+                "--config", "Release",
+                "--parallel", Runtime.getRuntime().availableProcessors().coerceAtMost(8).coerceAtLeast(1).toString()
+            )
+        )
+    }
+    val smokeOutputDir = layout.buildDirectory.dir("smoke/$classifier").get().asFile
+    val smokeTask = tasks.register<Exec>("smokeWeb") {
+        group = "verification"
+        description = "Builds an Emscripten link smoke test against the Emdawnwebgpu package."
+        onlyIf { enabledOnHost }
+        dependsOn(buildTask)
+        inputs.dir(stageDirectory)
+        outputs.file(File(smokeOutputDir, "dawn_natives_smoke.js"))
+        doFirst {
+            smokeOutputDir.mkdirs()
+        }
+        environment("PYTHONPATH", webPythonPath())
+        commandLine(
+            emscriptenCommand("em++") + listOf(
+                "--use-port=${stageDirectory.resolve("emdawnwebgpu.port.py").absolutePath}",
+                "-std=c++20",
+                smokeProjectDir.file("smoke.cpp").asFile.absolutePath,
+                "-o", File(smokeOutputDir, "dawn_natives_smoke.js").absolutePath,
+                "--closure=1"
+            )
+        )
+    }
+    val packageTask = tasks.register<Sync>("packageWeb") {
+        group = "distribution"
+        description = "Stages the Emdawnwebgpu web package for artifact upload."
+        onlyIf { enabledOnHost }
+        dependsOn(smokeTask)
+        from(stageDirectory) {
+            exclude("**/__pycache__/**")
+            exclude("**/*.pyc")
+        }
+        into(File(packagesDir.get().asFile, packageDirectoryName))
     }
     return NativeTaskSet(buildTask, smokeTask, packageTask)
 }
@@ -550,6 +726,7 @@ val macosArm64Tasks = registerNativeTarget(macosArm64Target)
 val iosArm64Tasks = registerNativeTarget(iosArm64Target)
 val iosSimulatorArm64Tasks = registerNativeTarget(iosSimulatorArm64Target)
 val iosSimulatorX64Tasks = registerNativeTarget(iosSimulatorX64Target)
+val webTasks = registerWebTarget()
 
 val androidAbiTaskSets = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64").map { abi ->
     val target = NativeTarget(
@@ -614,7 +791,8 @@ val packageAll = tasks.register("packageAll") {
         macosX64Tasks.packageTask,
         macosArm64Tasks.packageTask,
         packageAndroidAll,
-        packageIosAll
+        packageIosAll,
+        webTasks.packageTask
     )
 }
 
@@ -640,7 +818,8 @@ val writeReleaseManifest = tasks.register("writeReleaseManifest") {
             "  \"packageVersion\": ${quoteJson(nativeConfig.packageConfig.version)},",
             "  \"dawn\": {",
             "    \"repository\": ${quoteJson(nativeConfig.dawn.repository)},",
-            "    \"revision\": ${quoteJson(nativeConfig.dawn.revision)}",
+            "    \"chromiumVersion\": ${quoteJson(nativeConfig.dawn.normalizedChromiumVersion)},",
+            "    \"ref\": ${quoteJson(nativeConfig.dawn.ref)}",
             "  },",
             "  \"android\": {",
             "    \"ndkVersion\": ${quoteJson(nativeConfig.android.ndkVersion)},",
@@ -650,8 +829,14 @@ val writeReleaseManifest = tasks.register("writeReleaseManifest") {
             "  \"ios\": {",
             "    \"deploymentTarget\": ${quoteJson(nativeConfig.ios.deploymentTarget)}",
             "  },",
+            "  \"web\": {",
+            "    \"emscriptenVersion\": ${quoteJson(nativeConfig.web.emscriptenVersion)}",
+            "  },",
             "  \"targets\": [",
             "    \"dawn_natives::webgpu_dawn\"",
+            "  ],",
+            "  \"ports\": [",
+            "    \"emdawnwebgpu.port.py\"",
             "  ],",
             "  \"packages\": ["
         )
@@ -677,11 +862,16 @@ val verifyPackages = tasks.register("verifyPackages") {
 
 tasks.register("updateDawn") {
     group = "dawn natives update"
-    description = "Updates dawn-natives.toml to a new Dawn commit after verifying it can be fetched."
-    val requestedRevision = providers.gradleProperty("dawnNatives.dawnRevision")
+    description = "Updates dawn-natives.toml to a new Dawn Chromium branch after verifying it can be fetched."
+    val requestedChromiumVersion = providers.gradleProperty("dawnNatives.chromiumVersion")
     doLast {
-        val revision = requestedRevision.orNull?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw GradleException("Pass -PdawnNatives.dawnRevision=<commit>.")
+        val chromiumVersion = requestedChromiumVersion.orNull
+            ?.trim()
+            ?.removePrefix("refs/heads/chromium/")
+            ?.removePrefix("chromium/")
+            ?.takeIf { it.isNotEmpty() }
+            ?: throw GradleException("Pass -PdawnNatives.chromiumVersion=<number>, for example 7458.")
+        val gitRef = "refs/heads/chromium/$chromiumVersion"
         val checkDir = layout.buildDirectory.dir("update-check/dawn").get().asFile
         if (!checkDir.resolve(".git").isDirectory) {
             checkDir.parentFile.mkdirs()
@@ -691,21 +881,22 @@ tasks.register("updateDawn") {
         }
         providers.exec {
             workingDir = checkDir
-            commandLine("git", "fetch", "--depth", "1", "origin", revision)
+            commandLine("git", "fetch", "--depth", "1", "origin", gitRef)
         }.result.get()
-        replaceTomlValues(mapOf(("dawn" to "revision") to revision))
+        replaceTomlValues(mapOf(("dawn" to "chromiumVersion") to chromiumVersion))
         writeLockManifest(readNativeConfig())
-        logger.lifecycle("Updated Dawn revision to $revision")
+        logger.lifecycle("Updated Dawn ref to chromium/$chromiumVersion")
     }
 }
 
 tasks.register("updateToolchainPin") {
     group = "dawn natives update"
-    description = "Updates Android and iOS toolchain pins in dawn-natives.toml."
+    description = "Updates Android, iOS, and Emscripten toolchain pins in dawn-natives.toml."
     val androidNdkVersion = providers.gradleProperty("dawnNatives.androidNdkVersion")
     val androidMinSdk = providers.gradleProperty("dawnNatives.androidMinSdk")
     val androidCmakeVersion = providers.gradleProperty("dawnNatives.androidCmakeVersion")
     val iosDeploymentTarget = providers.gradleProperty("dawnNatives.iosDeploymentTarget")
+    val emscriptenVersion = providers.gradleProperty("dawnNatives.emscriptenVersion")
     doLast {
         val replacements = linkedMapOf<Pair<String, String>, String>()
         androidNdkVersion.orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
@@ -720,11 +911,14 @@ tasks.register("updateToolchainPin") {
         iosDeploymentTarget.orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
             replacements["ios" to "deploymentTarget"] = it
         }
+        emscriptenVersion.orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            replacements["web" to "emscriptenVersion"] = it
+        }
         if (replacements.isEmpty()) {
             throw GradleException(
                 "Pass at least one of -PdawnNatives.androidNdkVersion=..., " +
                     "-PdawnNatives.androidMinSdk=..., -PdawnNatives.androidCmakeVersion=..., " +
-                    "or -PdawnNatives.iosDeploymentTarget=..."
+                    "-PdawnNatives.iosDeploymentTarget=..., or -PdawnNatives.emscriptenVersion=..."
             )
         }
         replaceTomlValues(replacements)

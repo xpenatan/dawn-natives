@@ -210,6 +210,43 @@ jobs:
           path: build/packages/${{ matrix.artifact }}
           if-no-files-found: error
 
+  web:
+    name: Web Emdawnwebgpu
+    needs: cancel-previous
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+      - name: Read Emscripten pin
+        id: pins
+        shell: bash
+        run: |
+          emscripten_version=
+          ./gradlew --no-daemon -q printNativeDepsConfig > "$RUNNER_TEMP/dawn-natives.properties"
+          while IFS='=' read -r key value; do
+            case "$key" in
+              web.emscriptenVersion) emscripten_version="$value" ;;
+            esac
+          done < "$RUNNER_TEMP/dawn-natives.properties"
+          if [[ -z "$emscripten_version" ]]; then
+            echo "Missing Emscripten pin from printNativeDepsConfig." >&2
+            exit 1
+          fi
+          echo "emscripten-version=$emscripten_version" >> "$GITHUB_OUTPUT"
+      - uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: ${{ steps.pins.outputs.emscripten-version }}
+      - name: Build package
+        run: ./gradlew --no-daemon packageWeb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dawn-natives-web-emdawnwebgpu
+          path: build/packages/dawn-natives-web-emdawnwebgpu
+          if-no-files-found: error
+
   release:
     name: Release
     runs-on: ubuntu-latest
@@ -220,6 +257,7 @@ jobs:
       - macos_arm64
       - android
       - ios
+      - web
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -232,22 +270,42 @@ jobs:
           path: build/packages
       - name: Write release manifest
         run: ./gradlew --no-daemon writeReleaseManifest
+      - name: Read build metadata
+        id: build_metadata
+        shell: bash
+        run: |
+          package_version=
+          dawn_chromium_version=
+          dawn_ref=
+          ./gradlew --no-daemon -q printNativeDepsConfig > "$RUNNER_TEMP/dawn-natives.properties"
+          while IFS='=' read -r key value; do
+            case "$key" in
+              package.version) package_version="$value" ;;
+              dawn.chromiumVersion) dawn_chromium_version="$value" ;;
+              dawn.ref) dawn_ref="$value" ;;
+            esac
+          done < "$RUNNER_TEMP/dawn-natives.properties"
+          if [[ -z "$package_version" || -z "$dawn_chromium_version" || -z "$dawn_ref" ]]; then
+            echo "Missing build metadata from printNativeDepsConfig." >&2
+            exit 1
+          fi
+          {
+            echo "package_version=$package_version"
+            echo "dawn_chromium_version=$dawn_chromium_version"
+            echo "dawn_ref=$dawn_ref"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### dawn-natives build"
+            echo
+            echo "- Package version: ${package_version}"
+            echo "- Dawn Chromium version: ${dawn_chromium_version}"
+            echo "- Dawn ref: ${dawn_ref}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: dawn-natives-manifest
           path: build/packages/dawn-natives-manifest.json
           if-no-files-found: error
-      - name: Read package version
-        if: github.event_name == 'workflow_dispatch'
-        id: package_version
-        shell: bash
-        run: |
-          package_version="$(./gradlew --no-daemon -q printNativeDepsConfig | sed -n 's/^package.version=//p')"
-          if [[ -z "$package_version" ]]; then
-            echo "package.version was not printed by printNativeDepsConfig" >&2
-            exit 1
-          fi
-          echo "version=$package_version" >> "$GITHUB_OUTPUT"
       - name: Prepare GitHub release assets
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -255,7 +313,7 @@ jobs:
           rm -rf build/release-assets
           mkdir -p build/release-assets
           while IFS= read -r -d '' package_dir; do
-            if [[ ! -f "$package_dir/cmake/dawn-natives-targets.cmake" ]]; then
+            if [[ ! -f "$package_dir/cmake/dawn-natives-targets.cmake" && ! -f "$package_dir/emdawnwebgpu.port.py" ]]; then
               continue
             fi
             package_name="$(basename "$package_dir")"
@@ -267,11 +325,13 @@ jobs:
         id: release_metadata
         shell: bash
         env:
-          PACKAGE_VERSION: ${{ steps.package_version.outputs.version }}
+          PACKAGE_VERSION: ${{ steps.build_metadata.outputs.package_version }}
+          DAWN_CHROMIUM_VERSION: ${{ steps.build_metadata.outputs.dawn_chromium_version }}
+          DAWN_REF: ${{ steps.build_metadata.outputs.dawn_ref }}
         run: |
           readable_date="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           tag_name="v${PACKAGE_VERSION}"
-          release_name="$tag_name"
+          release_name="${tag_name} (Dawn ${DAWN_CHROMIUM_VERSION})"
           {
             echo "tag_name=$tag_name"
             echo "release_name=$release_name"
@@ -282,6 +342,8 @@ jobs:
             echo
             echo "UTC build date: ${readable_date}"
             echo "Commit: ${GITHUB_SHA}"
+            echo "Dawn Chromium version: ${DAWN_CHROMIUM_VERSION}"
+            echo "Dawn ref: ${DAWN_REF}"
             echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } > "$RUNNER_TEMP/release-notes.md"
       - name: Update version tag

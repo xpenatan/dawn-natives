@@ -3,7 +3,7 @@ version = "0.1.0"
 
 [dawn]
 repository = "https://dawn.googlesource.com/dawn"
-revision = "d952ec49e3d4b719c7196cfcb7d2a25b6c8b070d"
+chromiumVersion = "7458"
 
 [android]
 ndkVersion = "27.0.12077973"
@@ -12,3 +12,6 @@ cmakeVersion = "3.22.1"
 
 [ios]
 deploymentTarget = "13.0"
+
+[web]
+emscriptenVersion = "6.0.0"
