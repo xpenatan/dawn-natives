@@ -1,7 +1,7 @@
 import java.io.File
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.Exec
-import org.gradle.api.tasks.bundling.Zip
+import org.gradle.api.tasks.Sync
 import java.security.MessageDigest
 
 plugins {
@@ -19,6 +19,10 @@ data class AndroidConfig(
     val cmakeVersion: String
 )
 
+data class IosConfig(
+    val deploymentTarget: String
+)
+
 data class PackageConfig(
     val version: String
 )
@@ -26,7 +30,8 @@ data class PackageConfig(
 data class DawnNativesConfig(
     val packageConfig: PackageConfig,
     val dawn: DawnConfig,
-    val android: AndroidConfig
+    val android: AndroidConfig,
+    val ios: IosConfig
 )
 
 data class NativeTarget(
@@ -34,16 +39,17 @@ data class NativeTarget(
     val classifier: String,
     val stageDirectory: File,
     val buildDirectory: File,
-    val packageFileName: String,
+    val packageDirectoryName: String,
     val enabledOnHost: Boolean,
     val configurePrefix: List<String> = emptyList(),
-    val configureArguments: List<String> = emptyList()
+    val configureArguments: List<String> = emptyList(),
+    val smokeConfigureArguments: List<String> = emptyList()
 )
 
 data class NativeTaskSet(
     val buildTask: TaskProvider<Exec>,
     val smokeTask: TaskProvider<Exec>,
-    val packageTask: TaskProvider<Zip>
+    val packageTask: TaskProvider<Sync>
 )
 
 val configFile = layout.projectDirectory.file("dawn-natives.toml").asFile
@@ -101,6 +107,9 @@ fun readNativeConfig(): DawnNativesConfig {
             ndkVersion = toml.required("android", "ndkVersion"),
             minSdk = toml.required("android", "minSdk"),
             cmakeVersion = toml.required("android", "cmakeVersion")
+        ),
+        ios = IosConfig(
+            deploymentTarget = toml.required("ios", "deploymentTarget")
         )
     )
 }
@@ -113,19 +122,39 @@ fun quoteJson(value: String): String {
         .replace("\"", "\\\"") + "\""
 }
 
-fun sha256(file: File): String {
+fun directorySha256(directory: File): String {
     val digest = MessageDigest.getInstance("SHA-256")
-    file.inputStream().use { input ->
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) {
-                break
+    directory.walkTopDown()
+        .filter(File::isFile)
+        .sortedBy { it.relativeTo(directory).invariantSeparatorsPath }
+        .forEach { file ->
+            digest.update(file.relativeTo(directory).invariantSeparatorsPath.toByteArray(Charsets.UTF_8))
+            digest.update(0)
+            file.inputStream().use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) {
+                        break
+                    }
+                    digest.update(buffer, 0, read)
+                }
             }
-            digest.update(buffer, 0, read)
+            digest.update(0)
         }
-    }
     return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+}
+
+fun directorySize(directory: File): Long {
+    return directory.walkTopDown()
+        .filter(File::isFile)
+        .sumOf(File::length)
+}
+
+fun packageDirectories(root: File): List<File> {
+    return root.listFiles { file ->
+        file.isDirectory && file.resolve("cmake/dawn-natives-targets.cmake").isFile
+    }?.sortedBy(File::getName) ?: emptyList()
 }
 
 fun replaceTomlValues(replacements: Map<Pair<String, String>, String>) {
@@ -174,6 +203,9 @@ fun writeLockManifest(config: DawnNativesConfig) {
             "ndkVersion": ${quoteJson(config.android.ndkVersion)},
             "minSdk": ${quoteJson(config.android.minSdk)},
             "cmakeVersion": ${quoteJson(config.android.cmakeVersion)}
+          },
+          "ios": {
+            "deploymentTarget": ${quoteJson(config.ios.deploymentTarget)}
           }
         }
         """.trimIndent() + System.lineSeparator()
@@ -277,6 +309,7 @@ val printNativeDepsConfig = tasks.register("printNativeDepsConfig") {
         println("android.ndkVersion=${nativeConfig.android.ndkVersion}")
         println("android.minSdk=${nativeConfig.android.minSdk}")
         println("android.cmakeVersion=${nativeConfig.android.cmakeVersion}")
+        println("ios.deploymentTarget=${nativeConfig.ios.deploymentTarget}")
     }
 }
 
@@ -391,7 +424,7 @@ fun registerNativeTarget(target: NativeTarget): NativeTaskSet {
                 "-B", smokeBuildDir.absolutePath,
                 "-DCMAKE_BUILD_TYPE=Release",
                 "-DDAWN_NATIVES_PACKAGE_DIR=${target.stageDirectory.absolutePath}"
-            ) + target.configureArguments.filterNot { it.startsWith("-DDAWN_NATIVES_") }
+            ) + target.configureArguments.filterNot { it.startsWith("-DDAWN_NATIVES_") } + target.smokeConfigureArguments
         )
     }
     val smokeTask = tasks.register<Exec>("smoke${target.taskSuffix}") {
@@ -407,14 +440,14 @@ fun registerNativeTarget(target: NativeTarget): NativeTaskSet {
             )
         )
     }
-    val packageTask = tasks.register<Zip>("package${target.taskSuffix}") {
+    val packageOutputDir = File(packagesDir.get().asFile, target.packageDirectoryName)
+    val packageTask = tasks.register<Sync>("package${target.taskSuffix}") {
         group = "distribution"
-        description = "Packages ${target.classifier} Dawn static native package."
+        description = "Stages ${target.classifier} Dawn static native package for artifact upload."
         onlyIf { target.enabledOnHost }
         dependsOn(smokeTask)
         from(target.stageDirectory)
-        archiveFileName.set(target.packageFileName)
-        destinationDirectory.set(packagesDir)
+        into(packageOutputDir)
     }
     return NativeTaskSet(buildTask, smokeTask, packageTask)
 }
@@ -425,13 +458,14 @@ val packagePrefix = "dawn-natives"
 val androidPackageClassifier = "android-ndk${nativeConfig.android.ndkVersion.substringBefore('.')}-minsdk${nativeConfig.android.minSdk}"
 val androidNdk = androidNdkDirectory()
 val androidEnabled = hostOs() == "linux" && androidNdk != null
+val iosEnabled = hostOs() == "macos"
 
 val linuxTarget = NativeTarget(
     taskSuffix = "LinuxX64",
     classifier = "linux-x64-gcc",
     stageDirectory = File(stageRoot, "linux-x64-gcc"),
     buildDirectory = File(cmakeRoot, "linux-x64-gcc"),
-    packageFileName = "$packagePrefix-linux-x64-gcc.zip",
+    packageDirectoryName = "$packagePrefix-linux-x64-gcc",
     enabledOnHost = hostOs() == "linux"
 )
 val windowsTarget = NativeTarget(
@@ -439,7 +473,7 @@ val windowsTarget = NativeTarget(
     classifier = "windows-x64-msvc",
     stageDirectory = File(stageRoot, "windows-x64-msvc"),
     buildDirectory = File(cmakeRoot, "windows-x64-msvc"),
-    packageFileName = "$packagePrefix-windows-x64-msvc.zip",
+    packageDirectoryName = "$packagePrefix-windows-x64-msvc",
     enabledOnHost = hostOs() == "windows"
 )
 val macosX64Target = NativeTarget(
@@ -447,7 +481,7 @@ val macosX64Target = NativeTarget(
     classifier = "macos-x64-appleclang",
     stageDirectory = File(stageRoot, "macos-x64-appleclang"),
     buildDirectory = File(cmakeRoot, "macos-x64-appleclang"),
-    packageFileName = "$packagePrefix-macos-x64-appleclang.zip",
+    packageDirectoryName = "$packagePrefix-macos-x64-appleclang",
     enabledOnHost = hostOs() == "macos",
     configureArguments = listOf("-DCMAKE_OSX_ARCHITECTURES=x86_64")
 )
@@ -456,15 +490,66 @@ val macosArm64Target = NativeTarget(
     classifier = "macos-arm64-appleclang",
     stageDirectory = File(stageRoot, "macos-arm64-appleclang"),
     buildDirectory = File(cmakeRoot, "macos-arm64-appleclang"),
-    packageFileName = "$packagePrefix-macos-arm64-appleclang.zip",
+    packageDirectoryName = "$packagePrefix-macos-arm64-appleclang",
     enabledOnHost = hostOs() == "macos",
     configureArguments = listOf("-DCMAKE_OSX_ARCHITECTURES=arm64")
+)
+val iosArm64Target = NativeTarget(
+    taskSuffix = "IosArm64",
+    classifier = "ios-arm64-appleclang",
+    stageDirectory = File(stageRoot, "ios-arm64-appleclang"),
+    buildDirectory = File(cmakeRoot, "ios-arm64-appleclang"),
+    packageDirectoryName = "$packagePrefix-ios-arm64-appleclang",
+    enabledOnHost = iosEnabled,
+    configureArguments = listOf(
+        "-DCMAKE_SYSTEM_NAME=iOS",
+        "-DCMAKE_OSX_SYSROOT=iphoneos",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=${nativeConfig.ios.deploymentTarget}",
+        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
+    ),
+    smokeConfigureArguments = listOf("-DDAWN_NATIVES_SMOKE_STATIC_LIBRARY=ON")
+)
+val iosSimulatorArm64Target = NativeTarget(
+    taskSuffix = "IosSimulatorArm64",
+    classifier = "ios-simulator-arm64-appleclang",
+    stageDirectory = File(stageRoot, "ios-simulator-arm64-appleclang"),
+    buildDirectory = File(cmakeRoot, "ios-simulator-arm64-appleclang"),
+    packageDirectoryName = "$packagePrefix-ios-simulator-arm64-appleclang",
+    enabledOnHost = iosEnabled,
+    configureArguments = listOf(
+        "-DCMAKE_SYSTEM_NAME=iOS",
+        "-DCMAKE_OSX_SYSROOT=iphonesimulator",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=${nativeConfig.ios.deploymentTarget}",
+        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
+    ),
+    smokeConfigureArguments = listOf("-DDAWN_NATIVES_SMOKE_STATIC_LIBRARY=ON")
+)
+val iosSimulatorX64Target = NativeTarget(
+    taskSuffix = "IosSimulatorX64",
+    classifier = "ios-simulator-x64-appleclang",
+    stageDirectory = File(stageRoot, "ios-simulator-x64-appleclang"),
+    buildDirectory = File(cmakeRoot, "ios-simulator-x64-appleclang"),
+    packageDirectoryName = "$packagePrefix-ios-simulator-x64-appleclang",
+    enabledOnHost = iosEnabled,
+    configureArguments = listOf(
+        "-DCMAKE_SYSTEM_NAME=iOS",
+        "-DCMAKE_OSX_SYSROOT=iphonesimulator",
+        "-DCMAKE_OSX_ARCHITECTURES=x86_64",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET=${nativeConfig.ios.deploymentTarget}",
+        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
+    ),
+    smokeConfigureArguments = listOf("-DDAWN_NATIVES_SMOKE_STATIC_LIBRARY=ON")
 )
 
 val linuxTasks = registerNativeTarget(linuxTarget)
 val windowsTasks = registerNativeTarget(windowsTarget)
 val macosX64Tasks = registerNativeTarget(macosX64Target)
 val macosArm64Tasks = registerNativeTarget(macosArm64Target)
+val iosArm64Tasks = registerNativeTarget(iosArm64Target)
+val iosSimulatorArm64Tasks = registerNativeTarget(iosSimulatorArm64Target)
+val iosSimulatorX64Tasks = registerNativeTarget(iosSimulatorX64Target)
 
 val androidAbiTaskSets = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64").map { abi ->
     val target = NativeTarget(
@@ -472,7 +557,7 @@ val androidAbiTaskSets = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64").map
         classifier = "$androidPackageClassifier-$abi",
         stageDirectory = File(stageRoot, "$androidPackageClassifier/android/$abi"),
         buildDirectory = File(cmakeRoot, "$androidPackageClassifier-$abi"),
-        packageFileName = "$packagePrefix-android-$abi.zip",
+        packageDirectoryName = "$packagePrefix-android-$abi",
         enabledOnHost = androidEnabled,
         configureArguments = listOf(
             "-DCMAKE_TOOLCHAIN_FILE=${androidNdk?.resolve("build/cmake/android.toolchain.cmake")?.absolutePath ?: ""}",
@@ -493,9 +578,31 @@ val buildAndroidAll = tasks.register("buildAndroidAll") {
 
 val packageAndroidAll = tasks.register("packageAndroidAll") {
     group = "distribution"
-    description = "Packages all Android ABI Dawn static native packages as separate ABI ZIPs."
+    description = "Stages all Android ABI Dawn static native packages."
     onlyIf { androidEnabled }
     dependsOn(androidAbiTaskSets.map { it.packageTask })
+}
+
+val buildIosAll = tasks.register("buildIosAll") {
+    group = "dawn natives"
+    description = "Builds and stages all iOS Dawn static native packages."
+    onlyIf { iosEnabled }
+    dependsOn(
+        iosArm64Tasks.buildTask,
+        iosSimulatorArm64Tasks.buildTask,
+        iosSimulatorX64Tasks.buildTask
+    )
+}
+
+val packageIosAll = tasks.register("packageIosAll") {
+    group = "distribution"
+    description = "Stages all iOS Dawn static native packages."
+    onlyIf { iosEnabled }
+    dependsOn(
+        iosArm64Tasks.packageTask,
+        iosSimulatorArm64Tasks.packageTask,
+        iosSimulatorX64Tasks.packageTask
+    )
 }
 
 val packageAll = tasks.register("packageAll") {
@@ -506,52 +613,59 @@ val packageAll = tasks.register("packageAll") {
         windowsTasks.packageTask,
         macosX64Tasks.packageTask,
         macosArm64Tasks.packageTask,
-        packageAndroidAll
+        packageAndroidAll,
+        packageIosAll
     )
 }
 
 val writeReleaseManifest = tasks.register("writeReleaseManifest") {
     group = "distribution"
-    description = "Writes build/packages/dawn-natives-manifest.json for existing package ZIPs."
+    description = "Writes build/packages/dawn-natives-manifest.json for existing package directories."
     inputs.file(configFile)
-    inputs.files(fileTree(packagesDir) { include("*.zip") })
+    inputs.files(fileTree(packagesDir) { exclude("dawn-natives-manifest.json") })
     outputs.file(packagesDir.map { it.file("dawn-natives-manifest.json") })
     doLast {
-        val packageFiles = packagesDir.get().asFile
-            .listFiles { file -> file.isFile && file.extension.equals("zip", ignoreCase = true) }
-            ?.sortedBy(File::getName)
-            ?: emptyList()
-        val packageJson = packageFiles.joinToString(",\n") { file ->
-            """
-            {
-              "name": ${quoteJson(file.name)},
-              "sha256": ${quoteJson(sha256(file))},
-              "size": ${file.length()}
-            }
-            """.trimIndent().prependIndent("    ")
+        val packageDirs = packageDirectories(packagesDir.get().asFile)
+        val packageJson = packageDirs.joinToString(",\n") { directory ->
+            listOf(
+                "    {",
+                "      \"name\": ${quoteJson(directory.name)},",
+                "      \"sha256\": ${quoteJson(directorySha256(directory))},",
+                "      \"size\": ${directorySize(directory)}",
+                "    }"
+            ).joinToString("\n")
         }
-        val manifest = """
-            {
-              "packageVersion": ${quoteJson(nativeConfig.packageConfig.version)},
-              "dawn": {
-                "repository": ${quoteJson(nativeConfig.dawn.repository)},
-                "revision": ${quoteJson(nativeConfig.dawn.revision)}
-              },
-              "android": {
-                "ndkVersion": ${quoteJson(nativeConfig.android.ndkVersion)},
-                "minSdk": ${quoteJson(nativeConfig.android.minSdk)},
-                "cmakeVersion": ${quoteJson(nativeConfig.android.cmakeVersion)}
-              },
-              "targets": [
-                "dawn_natives::webgpu_dawn"
-              ],
-              "packages": [
-            $packageJson
-              ]
-            }
-        """.trimIndent()
+        val manifestLines = mutableListOf(
+            "{",
+            "  \"packageVersion\": ${quoteJson(nativeConfig.packageConfig.version)},",
+            "  \"dawn\": {",
+            "    \"repository\": ${quoteJson(nativeConfig.dawn.repository)},",
+            "    \"revision\": ${quoteJson(nativeConfig.dawn.revision)}",
+            "  },",
+            "  \"android\": {",
+            "    \"ndkVersion\": ${quoteJson(nativeConfig.android.ndkVersion)},",
+            "    \"minSdk\": ${quoteJson(nativeConfig.android.minSdk)},",
+            "    \"cmakeVersion\": ${quoteJson(nativeConfig.android.cmakeVersion)}",
+            "  },",
+            "  \"ios\": {",
+            "    \"deploymentTarget\": ${quoteJson(nativeConfig.ios.deploymentTarget)}",
+            "  },",
+            "  \"targets\": [",
+            "    \"dawn_natives::webgpu_dawn\"",
+            "  ],",
+            "  \"packages\": ["
+        )
+        if (packageJson.isNotEmpty()) {
+            manifestLines += packageJson
+        }
+        manifestLines += listOf(
+            "  ]",
+            "}"
+        )
         packagesDir.get().asFile.mkdirs()
-        packagesDir.get().file("dawn-natives-manifest.json").asFile.writeText(manifest + System.lineSeparator())
+        packagesDir.get().file("dawn-natives-manifest.json").asFile.writeText(
+            manifestLines.joinToString(System.lineSeparator()) + System.lineSeparator()
+        )
     }
 }
 
@@ -587,10 +701,11 @@ tasks.register("updateDawn") {
 
 tasks.register("updateToolchainPin") {
     group = "dawn natives update"
-    description = "Updates Android toolchain pins in dawn-natives.toml."
+    description = "Updates Android and iOS toolchain pins in dawn-natives.toml."
     val androidNdkVersion = providers.gradleProperty("dawnNatives.androidNdkVersion")
     val androidMinSdk = providers.gradleProperty("dawnNatives.androidMinSdk")
     val androidCmakeVersion = providers.gradleProperty("dawnNatives.androidCmakeVersion")
+    val iosDeploymentTarget = providers.gradleProperty("dawnNatives.iosDeploymentTarget")
     doLast {
         val replacements = linkedMapOf<Pair<String, String>, String>()
         androidNdkVersion.orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
@@ -602,10 +717,14 @@ tasks.register("updateToolchainPin") {
         androidCmakeVersion.orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
             replacements["android" to "cmakeVersion"] = it
         }
+        iosDeploymentTarget.orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            replacements["ios" to "deploymentTarget"] = it
+        }
         if (replacements.isEmpty()) {
             throw GradleException(
                 "Pass at least one of -PdawnNatives.androidNdkVersion=..., " +
-                    "-PdawnNatives.androidMinSdk=..., or -PdawnNatives.androidCmakeVersion=..."
+                    "-PdawnNatives.androidMinSdk=..., -PdawnNatives.androidCmakeVersion=..., " +
+                    "or -PdawnNatives.iosDeploymentTarget=..."
             )
         }
         replaceTomlValues(replacements)

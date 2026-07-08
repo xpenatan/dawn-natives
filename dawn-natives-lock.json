@@ -8,5 +8,8 @@
     "ndkVersion": "27.0.12077973",
     "minSdk": "29",
     "cmakeVersion": "3.22.1"
+  },
+  "ios": {
+    "deploymentTarget": "13.0"
   }
 }

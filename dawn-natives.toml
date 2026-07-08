@@ -9,3 +9,6 @@ revision = "d952ec49e3d4b719c7196cfcb7d2a25b6c8b070d"
 ndkVersion = "27.0.12077973"
 minSdk = "29"
 cmakeVersion = "3.22.1"
+
+[ios]
+deploymentTarget = "13.0"

@@ -10,5 +10,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include("${DAWN_NATIVES_PACKAGE_DIR}/cmake/dawn-natives-targets.cmake")
 
-add_executable(dawn_natives_smoke smoke.cpp)
+option(DAWN_NATIVES_SMOKE_STATIC_LIBRARY "Build the smoke target as a static library." OFF)
+
+if(DAWN_NATIVES_SMOKE_STATIC_LIBRARY)
+    add_library(dawn_natives_smoke STATIC smoke.cpp)
+else()
+    add_executable(dawn_natives_smoke smoke.cpp)
+endif()
+
 target_link_libraries(dawn_natives_smoke PRIVATE dawn_natives::webgpu_dawn)

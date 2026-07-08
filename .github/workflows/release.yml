@@ -46,8 +46,8 @@ jobs:
         run: ./gradlew --no-daemon packageLinuxX64
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-linux-x64
-          path: build/packages/dawn-natives-linux-x64-gcc.zip
+          name: dawn-natives-linux-x64-gcc
+          path: build/packages/dawn-natives-linux-x64-gcc
           if-no-files-found: error
 
   windows:
@@ -67,8 +67,8 @@ jobs:
         run: .\gradlew.bat --no-daemon packageWindowsX64
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-windows-x64
-          path: build/packages/dawn-natives-windows-x64-msvc.zip
+          name: dawn-natives-windows-x64-msvc
+          path: build/packages/dawn-natives-windows-x64-msvc
           if-no-files-found: error
 
   macos_x64:
@@ -85,8 +85,8 @@ jobs:
         run: ./gradlew --no-daemon packageMacosX64
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-macos-x64
-          path: build/packages/dawn-natives-macos-x64-appleclang.zip
+          name: dawn-natives-macos-x64-appleclang
+          path: build/packages/dawn-natives-macos-x64-appleclang
           if-no-files-found: error
 
   macos_arm64:
@@ -103,14 +103,30 @@ jobs:
         run: ./gradlew --no-daemon packageMacosArm64
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-macos-arm64
-          path: build/packages/dawn-natives-macos-arm64-appleclang.zip
+          name: dawn-natives-macos-arm64-appleclang
+          path: build/packages/dawn-natives-macos-arm64-appleclang
           if-no-files-found: error
 
   android:
-    name: Android
+    name: Android ${{ matrix.abi }}
     needs: cancel-previous
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            task: packageAndroidArm64V8a
+            artifact: dawn-natives-android-arm64-v8a
+          - abi: armeabi-v7a
+            task: packageAndroidArmeabiV7a
+            artifact: dawn-natives-android-armeabi-v7a
+          - abi: x86
+            task: packageAndroidX86
+            artifact: dawn-natives-android-x86
+          - abi: x86_64
+            task: packageAndroidX8664
+            artifact: dawn-natives-android-x86_64
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -154,11 +170,42 @@ jobs:
             "cmake;${{ steps.pins.outputs.cmake-version }}"
           echo "$ANDROID_HOME/cmake/${{ steps.pins.outputs.cmake-version }}/bin" >> "$GITHUB_PATH"
       - name: Build package
-        run: ./gradlew --no-daemon packageAndroidAll
+        run: ./gradlew --no-daemon ${{ matrix.task }}
       - uses: actions/upload-artifact@v7
         with:
-          name: dawn-natives-android
-          path: build/packages/dawn-natives-android-*.zip
+          name: ${{ matrix.artifact }}
+          path: build/packages/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  ios:
+    name: iOS ${{ matrix.name }}
+    needs: cancel-previous
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: arm64
+            task: packageIosArm64
+            artifact: dawn-natives-ios-arm64-appleclang
+          - name: simulator arm64
+            task: packageIosSimulatorArm64
+            artifact: dawn-natives-ios-simulator-arm64-appleclang
+          - name: simulator x64
+            task: packageIosSimulatorX64
+            artifact: dawn-natives-ios-simulator-x64-appleclang
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+      - name: Build package
+        run: ./gradlew --no-daemon ${{ matrix.task }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/packages/${{ matrix.artifact }}
           if-no-files-found: error
 
   release:
@@ -170,6 +217,7 @@ jobs:
       - macos_x64
       - macos_arm64
       - android
+      - ios
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -178,8 +226,8 @@ jobs:
           java-version: 25
       - uses: actions/download-artifact@v8
         with:
+          pattern: dawn-natives-*
           path: build/packages
-          merge-multiple: true
       - name: Write release manifest
         run: ./gradlew --no-daemon writeReleaseManifest
       - name: Read package version
@@ -196,10 +244,19 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: dawn-natives-release
-          path: |
-            build/packages/*.zip
-            build/packages/dawn-natives-manifest.json
+          path: build/packages
           if-no-files-found: error
+      - name: Prepare GitHub release assets
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          rm -rf build/release-assets
+          mkdir -p build/release-assets
+          while IFS= read -r -d '' package_dir; do
+            package_name="$(basename "$package_dir")"
+            (cd "$package_dir" && zip -qr "$GITHUB_WORKSPACE/build/release-assets/${package_name}.zip" .)
+          done < <(find build/packages -mindepth 1 -maxdepth 1 -type d -name 'dawn-natives-*' -print0 | sort -z)
+          cp build/packages/dawn-natives-manifest.json build/release-assets/
       - name: Compute release metadata
         if: github.event_name == 'workflow_dispatch'
         id: release_metadata
@@ -241,6 +298,4 @@ jobs:
           overwrite_files: true
           fail_on_unmatched_files: true
           make_latest: true
-          files: |
-            build/packages/*.zip
-            build/packages/dawn-natives-manifest.json
+          files: build/release-assets/*
