@@ -134,6 +134,8 @@ jobs:
           distribution: temurin
           java-version: 25
       - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
       - name: Read Android toolchain pins
         id: pins
         shell: bash
