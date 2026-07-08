@@ -345,14 +345,6 @@ jobs:
             echo "Dawn ref: ${DAWN_REF}"
             echo "Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } > "$RUNNER_TEMP/release-notes.md"
-      - name: Update version tag
-        if: inputs.publishRelease
-        shell: bash
-        env:
-          TAG_NAME: ${{ steps.release_metadata.outputs.tag_name }}
-        run: |
-          git tag -f "$TAG_NAME" "$GITHUB_SHA"
-          git push --force origin "refs/tags/$TAG_NAME"
       - name: Publish GitHub release
         if: inputs.publishRelease
         uses: softprops/action-gh-release@v2
